@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <!-- Main живёт в Program.cs, App.xaml не нужен -->
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <StartupObject>Wallpaper.Program</StartupObject>
+
+    <AssemblyName>Wallpaper</AssemblyName>
+    <RootNamespace>Wallpaper</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- WinForms-проекты не тянут System.IO в неявные using'и -->
+    <Using Include="System.IO" />
+    <!-- Зато тянут System.Windows.Forms и System.Drawing, а те конфликтуют с одноимёнными
+         типами WPF (Application, MessageBox, Button, Size...). Импортируем их точечно
+         в Program.cs, где живёт трей, чтобы окна WPF писались без псевдонимов. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Единственный пакет во всём приложении: движок веб-обоев (v0.4).
+         Сам рантайм WebView2 предустановлен в Windows 11, пакет — только обёртка. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+  </ItemGroup>
+
+</Project>
