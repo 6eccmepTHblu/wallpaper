@@ -70,7 +70,14 @@ public partial class SettingsWindow : Window
 
         Wire();
         Program.ConfigReloaded += Refresh;
-        Closed += (_, _) => { Program.ConfigReloaded -= Refresh; _tileLoad?.Cancel(); };
+        // Файлы в папке появились — сетка обязана это показать сама, без переоткрытия окна.
+        Program.Engine.Rescanned += BuildTiles;
+        Closed += (_, _) =>
+        {
+            Program.ConfigReloaded -= Refresh;
+            Program.Engine.Rescanned -= BuildTiles;
+            _tileLoad?.Cancel();
+        };
 
         Refresh();
     }
@@ -168,6 +175,7 @@ public partial class SettingsWindow : Window
         SrcAddFolder.Click += (_, _) => AddFolders();
         SrcAddFiles.Click += (_, _) => AddFiles();
         SrcDel.Click += (_, _) => RemoveSource();
+        SrcRefresh.Click += (_, _) => Program.Engine.Refresh();
 
         TilesHost.Drop += OnDrop;
         TilesHost.DragOver += (_, e) =>

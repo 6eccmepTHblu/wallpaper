@@ -372,6 +372,8 @@
                 <Button x:Name="SrcAddFolder" Content="+ Папка…"/>
                 <Button x:Name="SrcAddFiles" Content="+ Файлы…" Margin="8,0,0,0"/>
                 <Button x:Name="SrcDel" Content="Убрать" Margin="8,0,0,0"/>
+                <Button x:Name="SrcRefresh" Content="⟳ Обновить" Margin="8,0,0,0"
+                        ToolTip="Перечитать папки. Нужно, если файлы добавились, а сетка их не показала"/>
                 <TextBlock Style="{StaticResource Hint}" Margin="16,0,0,0"
                            Text="Папки и файлы можно просто перетащить в сетку выше"/>
               </StackPanel>

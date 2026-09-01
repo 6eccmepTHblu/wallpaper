@@ -12,6 +12,29 @@
       <ResourceDictionary.MergedDictionaries>
         <ResourceDictionary Source="Menu.xaml"/>
       </ResourceDictionary.MergedDictionaries>
+
+      <!-- Кнопка-плашка под тёмный оверлей: штатный шаблон рисует светлую. -->
+      <Style TargetType="Button">
+        <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="Padding" Value="10,4"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <Border x:Name="b" Background="{DynamicResource Surface2}" CornerRadius="5"
+                      Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="b" Property="Background" Value="{DynamicResource AccentSoft}"/>
+                  <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
     </ResourceDictionary>
   </Window.Resources>
 
@@ -36,9 +59,13 @@
           </Border>
         </StackPanel>
 
-        <TextBlock Grid.Column="1" Foreground="{DynamicResource Muted}" FontSize="12"
-                   VerticalAlignment="Center"
-                   Text="← → ↑ ↓ выбрать · Enter поставить · Tab плейлист · Esc закрыть"/>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+          <Button x:Name="RefreshChip" Content="⟳ Обновить" Margin="0,0,16,0"
+                  Cursor="Hand" Focusable="False"
+                  ToolTip="Перечитать папки плейлиста"/>
+          <TextBlock Foreground="{DynamicResource Muted}" FontSize="12"
+                     Text="← → ↑ ↓ выбрать · Enter поставить · F5 обновить · Tab плейлист · Esc закрыть"/>
+        </StackPanel>
       </Grid>
 
       <ScrollViewer x:Name="Scroll" VerticalScrollBarVisibility="Auto"

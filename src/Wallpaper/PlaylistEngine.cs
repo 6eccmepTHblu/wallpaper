@@ -38,6 +38,9 @@ public sealed class PlaylistEngine : IDisposable
     /// <summary>Обои сменились или список файлов пересобран — трею пора обновить подпись.</summary>
     public event Action? Changed;
 
+    /// <summary>Список файлов пересобран — сеткам миниатюр пора перерисоваться.</summary>
+    public event Action? Rescanned;
+
     /// <summary>Наступило время сменить плейлист по расписанию. Применяет тот, кто владеет конфигом.</summary>
     public event Action<string>? ScheduleWantsPlaylist;
 
@@ -405,7 +408,20 @@ public sealed class PlaylistEngine : IDisposable
     {
         _rescan.Stop();
         Forget();
+        Rescanned?.Invoke();
         Changed?.Invoke();
+    }
+
+    /// <summary>
+    /// Перечитать папки прямо сейчас. Слежение за файловой системой пропускает изменения
+    /// чаще, чем хотелось бы — по сети, на съёмных дисках, при массовом копировании, —
+    /// поэтому у человека должна быть кнопка. Заодно пересобираем наблюдателей: папку
+    /// могли создать уже после запуска, и следить тогда было не за чем.
+    /// </summary>
+    public void Refresh()
+    {
+        BuildWatchers();
+        Rescan();
     }
 
     public void Dispose()

@@ -40,6 +40,10 @@ public partial class QuickPicker : Window
         Deactivated += (_, _) => { if (!_menuOpen) Dismiss(); };
         Closed += (_, _) => _load?.Cancel();
 
+        RefreshChip.Click += (_, _) => Program.Engine.Refresh();
+        Program.Engine.Rescanned += Build;
+        Closed += (_, _) => Program.Engine.Rescanned -= Build;
+
         PreviewKeyDown += OnKey;
         TextInput += OnText;
     }
@@ -152,6 +156,8 @@ public partial class QuickPicker : Window
                 break;
 
             case Key.Tab: NextPlaylist(e.KeyboardDevice.Modifiers.HasFlag(ModifierKeys.Shift) ? -1 : +1); break;
+
+            case Key.F5: Program.Engine.Refresh(); break;
 
             default: return;   // остальное пусть дойдёт до TextInput
         }

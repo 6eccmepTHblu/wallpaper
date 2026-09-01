@@ -116,7 +116,10 @@ public static class Program
         _engine.Present = Present;
 
         BuildTray();
-        _engine.Sync();
+        // Именно Reload, а не Sync: следить за папками плейлистов начинает он. Раньше здесь
+        // был Sync, и слежение включалось только после первой правки настроек — до неё
+        // новые файлы в папке приложение не замечало вовсе.
+        _engine.Reload(_cfg);
         _video.Apply(_cfg);
 
         _hotkeys = new Hotkeys(_cfg.Hotkeys, OnHotkey, _cfg.HotkeyEnabled);
