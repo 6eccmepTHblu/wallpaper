@@ -123,8 +123,14 @@ public sealed class Hotkeys : IDisposable
         return string.Join("+", parts);
     }
 
+    /// <summary>Клавиши сняты. Бывает не только при выходе, но и на время захвата комбинации.</summary>
+    public bool Disposed { get; private set; }
+
+    /// <summary>Повторный вызов безопасен: клавиши снимают и на время захвата, и при выходе.</summary>
     public void Dispose()
     {
+        if (Disposed) return;
+        Disposed = true;
         foreach (var id in _actions.Keys) UnregisterHotKey(_src.Handle, id);
         _actions.Clear();
         _src.RemoveHook(Hook);

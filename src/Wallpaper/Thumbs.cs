@@ -69,6 +69,34 @@ public static class Thumbs
         return img;
     }
 
+    /// <summary>
+    /// Крупное превью для наведения. Картинку читаем сами и сразу в нужном разрешении:
+    /// миниатюра в 200 px, растянутая на полэкрана, — каша. Видео и страницы отдаём
+    /// как есть из сетки, свой декодер ради них тянуть незачем.
+    /// Не кэшируем: такие картинки весят мегабайты, а держать нужно ровно одну.
+    /// </summary>
+    public static async Task<BitmapSource?> PreviewAsync(string path, int maxPx, CancellationToken ct = default)
+    {
+        if (PlaylistEngine.IsMoving(path)) return await GetAsync(path, ct);
+
+        try
+        {
+            return await Task.Run(() =>
+            {
+                var img = new BitmapImage();
+                img.BeginInit();
+                img.UriSource = new Uri(path);
+                img.DecodePixelWidth = maxPx;
+                img.CacheOption = BitmapCacheOption.OnLoad;
+                img.EndInit();
+                img.Freeze();
+                return (BitmapSource)img;
+            }, ct);
+        }
+        catch (OperationCanceledException) { return null; }
+        catch { return await GetAsync(path, ct); }   // битый или незнакомый формат — пусть решает shell
+    }
+
     static BitmapSource? Load(string path)
     {
         IntPtr hbm = IntPtr.Zero;

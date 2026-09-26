@@ -11,6 +11,9 @@ public enum Mode { Off, Static, Playlist, Video }
 
 public enum OrderMode { Sequential, Shuffle }
 
+/// <summary>Как разложены плитки в быстром выборе. К самому плейлисту отношения не имеет.</summary>
+public enum SortMode { Playlist, Name, NewestFirst, OldestFirst }
+
 public sealed class FolderRef
 {
     public string Path { get; set; } = "";
@@ -82,7 +85,10 @@ public sealed class Config
     /// <summary>Общее для всех мониторов — ограничение IDesktopWallpaper, см. SPEC §4.1.</summary>
     public FitMode Fit { get; set; } = FitMode.Fill;
 
-    /// <summary>Цвет полей при Fit/Center, "#RRGGBB". null — не трогать.</summary>
+    /// <summary>Чем заполнять поля вокруг картинки: цветом, средним цветом или размытием.</summary>
+    public BackgroundMode Background { get; set; }
+
+    /// <summary>Цвет полей для режима <see cref="BackgroundMode.Color"/>.</summary>
     public string? BackgroundColor { get; set; }
 
     public PauseRules PauseRules { get; set; } = new();
@@ -95,6 +101,12 @@ public sealed class Config
 
     public Dictionary<string, MonitorCfg> Monitors { get; set; } = [];
     public List<Playlist> Playlists { get; set; } = [];
+    /// <summary>Размер превью по наведению в быстром выборе, % от размера экрана.</summary>
+    public int PickerZoomPercent { get; set; } = 60;
+
+    /// <summary>Прозрачность того же превью, %. 0 — непрозрачное.</summary>
+    public int PickerZoomTransparency { get; set; }
+
     public Dictionary<string, string> Hotkeys { get; set; } = DefaultHotkeys();
 
     /// <summary>Действия с выключенными горячими клавишами. Комбинация при этом сохраняется.</summary>
@@ -122,6 +134,8 @@ public sealed class Config
         ["nextAll"] = "Ctrl+Alt+Shift+Right",
         ["togglePause"] = "Ctrl+Alt+P",
         ["quit"] = "Ctrl+Alt+Q",
+        ["deleteCurrent"] = "Ctrl+Alt+D",
+        ["hideCurrent"] = "Ctrl+Alt+C",
         ["quickPicker"] = "Ctrl+Alt+W",
         ["toggleSound"] = "Ctrl+Alt+M",
         ["toggleWallpapers"] = "Ctrl+Alt+0",
@@ -278,6 +292,12 @@ public sealed class State
     /// <summary>Где и какого размера было окно настроек — чтобы открылось там же, где закрыли.</summary>
     public WindowPlace? SettingsPlace { get; set; }
 
+    /// <summary>Выбранный порядок плиток в быстром выборе — держится между запусками.</summary>
+    public SortMode PickerSort { get; set; }
+
+    /// <summary>Показывать ли в быстром выборе крупное превью при наведении.</summary>
+    public bool PickerZoom { get; set; }
+
     public sealed class WindowPlace
     {
         public double X { get; set; }
@@ -308,6 +328,12 @@ public static class Paths
 {
     public static string Dir { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Wallpaper");
+
+    /// <summary>
+    /// Куда складывать производное — то, что всегда можно собрать заново. Локальный профиль,
+    /// а не роуминговый: синхронизировать между машинами десятки мегабайт подложек незачем.
+    /// </summary>
+    public static string Cache { get; } = Path.Combine(Path.GetTempPath(), "Wallpaper");
 
     public static string Config => Path.Combine(Dir, "config.json");
     public static string State => Path.Combine(Dir, "state.json");

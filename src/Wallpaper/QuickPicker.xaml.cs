@@ -24,6 +24,13 @@ public partial class QuickPicker : Window
     bool _menuOpen;
     CancellationTokenSource? _load;
 
+    /// <summary>Отсортированный список и ключ, для которого он посчитан: плейлист + порядок.</summary>
+    string[] _sorted = [];
+    string _sortedKey = "";
+
+    CancellationTokenSource? _previewLoad;
+    string? _hoverPath;
+
     public QuickPicker(Desktop.Display monitor)
     {
         InitializeComponent();
@@ -41,8 +48,13 @@ public partial class QuickPicker : Window
         Closed += (_, _) => _load?.Cancel();
 
         RefreshChip.Click += (_, _) => Program.Engine.Refresh();
-        Program.Engine.Rescanned += Build;
-        Closed += (_, _) => Program.Engine.Rescanned -= Build;
+        SortChip.Click += (_, _) => NextSort();
+
+        ZoomBox.IsChecked = Program.State.PickerZoom;
+        ZoomBox.Checked += (_, _) => SaveZoom(true);
+        ZoomBox.Unchecked += (_, _) => { SaveZoom(false); HidePreview(); };
+        Program.Engine.Rescanned += OnRescanned;
+        Closed += (_, _) => Program.Engine.Rescanned -= OnRescanned;
 
         PreviewKeyDown += OnKey;
         TextInput += OnText;
@@ -52,6 +64,7 @@ public partial class QuickPicker : Window
 
     void Build()
     {
+        HidePreview();
         _load?.Cancel();
         Tiles.Children.Clear();
         _tiles.Clear();
@@ -59,7 +72,9 @@ public partial class QuickPicker : Window
         var pl = Program.Cfg.Playlist(_plId);
         PlTitle.Text = pl?.Name ?? "Плейлистов нет";
 
-        var all = pl is null ? [] : Program.Engine.Order(pl.Id);
+        SortChip.Content = SortName(Program.State.PickerSort);
+
+        var all = pl is null ? [] : Sorted(pl);
         _paths = (_filter.Length == 0
             ? all
             : all.Where(p => Path.GetFileName(p).Contains(_filter, StringComparison.OrdinalIgnoreCase)).ToArray())
@@ -96,6 +111,8 @@ public partial class QuickPicker : Window
             var p = path;
             tile.ContextMenu = TileMenu(p);
             tile.MouseLeftButtonUp += (_, _) => Apply(p);
+            tile.MouseEnter += (_, _) => HoverStart(p);
+            tile.MouseLeave += (_, _) => HidePreview();
             _tiles.Add(tile);
             Tiles.Children.Add(tile);
 
@@ -104,6 +121,111 @@ public partial class QuickPicker : Window
 
         _index = Math.Max(0, Array.IndexOf(_paths, current));
         Highlight();
+    }
+
+    // ================= превью по наведению =================
+
+    void SaveZoom(bool on)
+    {
+        Program.State.PickerZoom = on;
+        Program.State.Save();
+    }
+
+    /// <summary>
+    /// Показать превью сразу, без выдержки. Миниатюра из сетки уже в памяти — её и рисуем
+    /// в первый же кадр, а чтение файла в полном разрешении подменяет картинку, когда
+    /// доедет. Так наведение отзывается мгновенно и всё равно заканчивается резким кадром.
+    /// </summary>
+    void HoverStart(string path)
+    {
+        if (ZoomBox.IsChecked != true) return;
+        _hoverPath = path;
+
+        // Монитор приходит в физических пикселях, WPF раскладывает в независимых от устройства.
+        double scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+        if (scale <= 0) scale = 1;
+        double part = Math.Clamp(Program.Cfg.PickerZoomPercent, 10, 100) / 100.0;
+
+        PreviewImage.MaxWidth = _mon.W * part / scale;
+        PreviewImage.MaxHeight = _mon.H * part / scale;
+        PreviewHost.Opacity = 1 - Math.Clamp(Program.Cfg.PickerZoomTransparency, 0, 90) / 100.0;
+        PreviewName.Text = Path.GetFileName(path);
+
+        var quick = Thumbs.Cached(path);
+        if (quick is not null)
+        {
+            PreviewImage.Source = quick;
+            PreviewHost.Visibility = Visibility.Visible;
+        }
+
+        _ = ShowPreviewAsync(path, (int)(_mon.W * part));
+    }
+
+    void HidePreview()
+    {
+        _previewLoad?.Cancel();
+        _hoverPath = null;
+        PreviewHost.Visibility = Visibility.Collapsed;
+        PreviewImage.Source = null;
+        PreviewName.Text = "";
+    }
+
+    async Task ShowPreviewAsync(string path, int px)
+    {
+        _previewLoad?.Cancel();
+        var cts = _previewLoad = new CancellationTokenSource();
+        var img = await Thumbs.PreviewAsync(path, px, cts.Token);
+
+        // Пока читали с диска, мышь могла уйти на другую плитку или вообще из окна.
+        if (img is null || cts.IsCancellationRequested || _hoverPath != path) return;
+
+        PreviewImage.Source = img;
+        PreviewHost.Visibility = Visibility.Visible;
+    }
+
+    // ================= порядок плиток =================
+
+    /// <summary>
+    /// Файлы в выбранном порядке. Считаем один раз на плейлист и режим: Build вызывается
+    /// на каждую букву фильтра, а дата создания — это обращение к диску на каждый файл.
+    /// </summary>
+    string[] Sorted(Playlist pl)
+    {
+        var mode = Program.State.PickerSort;
+        var key = $"{pl.Id}|{mode}";
+        if (key == _sortedKey) return _sorted;
+
+        _sortedKey = key;
+        return _sorted = PlaylistEngine.SortFiles(Program.Engine.Order(pl.Id), mode);
+    }
+
+    static string SortName(SortMode m) => m switch
+    {
+        SortMode.Name => "↕ По имени",
+        SortMode.NewestFirst => "↕ Сначала новые",
+        SortMode.OldestFirst => "↕ Сначала старые",
+        _ => "↕ Как в плейлисте",
+    };
+
+    void NextSort()
+    {
+        var next = Program.State.PickerSort switch
+        {
+            SortMode.Playlist => SortMode.NewestFirst,
+            SortMode.NewestFirst => SortMode.OldestFirst,
+            SortMode.OldestFirst => SortMode.Name,
+            _ => SortMode.Playlist,
+        };
+        Program.State.PickerSort = next;
+        Program.State.Save();
+        Build();
+    }
+
+    /// <summary>Список файлов пересобран — посчитанный порядок больше не годится.</summary>
+    void OnRescanned()
+    {
+        _sortedKey = "";
+        Build();
     }
 
     async Task FillAsync(Image target, string path, CancellationToken ct)
@@ -159,6 +281,8 @@ public partial class QuickPicker : Window
 
             case Key.F5: Program.Engine.Refresh(); break;
 
+            case Key.F6: NextSort(); break;
+
             default: return;   // остальное пусть дойдёт до TextInput
         }
         e.Handled = true;
@@ -187,6 +311,7 @@ public partial class QuickPicker : Window
         int i = list.FindIndex(p => p.Id == _plId);
         _plId = list[PlaylistEngine.Mod(i + delta, list.Count)].Id;
         _filter = "";
+        _sortedKey = "";
         Build();
     }
 
@@ -218,6 +343,7 @@ public partial class QuickPicker : Window
             pl.Excluded.Add(path);
 
         Program.ApplyConfig();
+        _sortedKey = "";   // список изменился, посчитанный порядок больше не годится
         Build();
     }
 

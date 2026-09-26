@@ -27,6 +27,8 @@ public partial class SettingsWindow : Window
         ("playlist2", "Плейлист 2"),
         ("playlist3", "Плейлист 3"),
         ("quit", "Выход из приложения"),
+        ("deleteCurrent", "Удалить картинку (в корзину)"),
+        ("hideCurrent", "Спрятать картинку — «(-)» в начало имени"),
     ];
 
     /// <summary>Пункт списка, который помнит своё значение и умеет показываться человеку.</summary>
@@ -77,6 +79,7 @@ public partial class SettingsWindow : Window
             Program.ConfigReloaded -= Refresh;
             Program.Engine.Rescanned -= BuildTiles;
             _tileLoad?.Cancel();
+            Program.ResumeHotkeys();
         };
 
         Refresh();
@@ -157,6 +160,14 @@ public partial class SettingsWindow : Window
             Program.ApplyConfig();
         };
         BgColor.LostFocus += (_, _) => SaveBgColor();
+        BgMode.SelectionChanged += (_, _) =>
+        {
+            if (_loading || BgMode.SelectedItem is not Opt o || o.Value is not BackgroundMode m) return;
+            Cfg.Background = m;
+            Program.ApplyConfig();
+            Program.Engine.Repaint();   // сменился способ показа, а не файл — Sync сам ничего не перевыставит
+            ShowBgMode();
+        };
 
         PlList.SelectionChanged += (_, _) => SelectPlaylist((PlList.SelectedItem as Opt)?.Value as string);
         PlAdd.Click += (_, _) => AddPlaylist();
@@ -197,6 +208,10 @@ public partial class SettingsWindow : Window
         Autostart.Checked += (_, _) => SaveAutostart(true);
         Autostart.Unchecked += (_, _) => SaveAutostart(false);
 
+        ZoomPercent.LostFocus += (_, _) =>
+            SaveNumber(ZoomPercent, 10, 100, v => Cfg.PickerZoomPercent = v, () => Cfg.PickerZoomPercent);
+        ZoomAlpha.LostFocus += (_, _) =>
+            SaveNumber(ZoomAlpha, 0, 90, v => Cfg.PickerZoomTransparency = v, () => Cfg.PickerZoomTransparency);
         EnabledBox.Checked += (_, _) => { if (!_loading && !Cfg.Enabled) Program.ToggleWallpapers(); };
         EnabledBox.Unchecked += (_, _) => { if (!_loading && Cfg.Enabled) Program.ToggleWallpapers(); };
 
@@ -221,9 +236,13 @@ public partial class SettingsWindow : Window
             LoadPauseRules();
             LoadVideoStatus();
             LoadSchedule();
+            ZoomPercent.Text = Cfg.PickerZoomPercent.ToString();
+            ZoomAlpha.Text = Cfg.PickerZoomTransparency.ToString();
             BgColor.Text = Cfg.BackgroundColor ?? "";
+            BuildBgModeBox();
             UpdateSwatch();
-            AboutLine.Text = $"Wallpaper v0.3 · {Paths.Dir}";
+            var v = typeof(SettingsWindow).Assembly.GetName().Version;
+            AboutLine.Text = $"Wallpaper v{v?.Major}.{v?.Minor} · {Paths.Dir}";
         }
         finally { _loading = false; }
 
@@ -346,7 +365,7 @@ public partial class SettingsWindow : Window
         var d = new Microsoft.Win32.OpenFileDialog
         {
             Title = "Картинка на рабочий стол",
-            Filter = "Изображения|*.jpg;*.jpeg;*.jfif;*.png;*.bmp;*.dib;*.gif;*.tif;*.tiff;*.webp|Все файлы|*.*",
+            Filter = PlaylistEngine.ImageFilter,
         };
         if (d.ShowDialog() != true) return;
         Edit(m => { m.Mode = Mode.Static; m.Path = d.FileName; });
@@ -469,6 +488,50 @@ public partial class SettingsWindow : Window
         FitBox.SelectedItem = opts.First(o => (FitMode)o.Value! == Cfg.Fit);
     }
 
+    /// <summary>
+    /// Прочитать число из поля, зажать в границы и применить. Мусор молча откатываем
+    /// к прежнему значению: ругаться модальным окном на опечатку — перебор.
+    /// </summary>
+    void SaveNumber(TextBox box, int min, int max, Action<int> apply, Func<int> read)
+    {
+        if (_loading) return;
+
+        if (int.TryParse(box.Text.Trim(), out int v))
+        {
+            apply(Math.Clamp(v, min, max));
+            Program.ApplyConfig();
+        }
+        box.Text = read().ToString();   // мусор и выход за границы молча откатываем
+    }
+
+    void BuildBgModeBox()
+    {
+        var opts = new List<Opt>
+        {
+            new("Указать цвет", BackgroundMode.Color),
+            new("Автоматически", BackgroundMode.Average),
+            new("Размытие", BackgroundMode.Blur),
+        };
+        BgMode.ItemsSource = opts;
+        BgMode.SelectedItem = opts.First(o => (BackgroundMode)o.Value! == Cfg.Background);
+        ShowBgMode();
+    }
+
+    /// <summary>Поле цвета имеет смысл только в первом режиме — в остальных оно гаснет.</summary>
+    void ShowBgMode()
+    {
+        bool manual = Cfg.Background == BackgroundMode.Color;
+        BgColor.IsEnabled = manual;
+        BgSwatch.Opacity = manual ? 1 : 0.35;
+
+        BgHint.Text = Cfg.Background switch
+        {
+            BackgroundMode.Average => "Цвет полей подбирается как средний по картинке. Windows держит один цвет на всю систему, поэтому на разных мониторах он будет от той картинки, что сменилась последней.",
+            BackgroundMode.Blur => "Вместо полей — сильно размытая копия самой картинки во весь монитор, поверх неё картинка целиком. Собранные подложки лежат в кэше, в %TEMP%\\Wallpaper\\backdrop.",
+            _ => "Пусто — не трогать цвет, заданный в Windows.",
+        };
+    }
+
     void SaveBgColor()
     {
         if (_loading) return;
@@ -478,6 +541,7 @@ public partial class SettingsWindow : Window
         else { BgColor.Text = Cfg.BackgroundColor ?? ""; return; }   // мусор — молча вернуть прежнее
         UpdateSwatch();
         Program.ApplyConfig();
+        Program.Engine.Repaint();
     }
 
     void UpdateSwatch()
@@ -646,7 +710,7 @@ public partial class SettingsWindow : Window
         {
             Title = "Картинки",
             Multiselect = true,
-            Filter = "Изображения|*.jpg;*.jpeg;*.jfif;*.png;*.bmp;*.dib;*.gif;*.tif;*.tiff;*.webp|Все файлы|*.*",
+            Filter = PlaylistEngine.ImageFilter,
         };
         if (d.ShowDialog() != true) return;
         AddSources(d.FileNames);
@@ -792,11 +856,15 @@ public partial class SettingsWindow : Window
         BuildTiles();
     }
 
-    /// <summary>Показать картинку прямо сейчас, не трогая настройки. Слайд-шоу сменит её по таймеру.</summary>
+    /// <summary>
+    /// Показать картинку прямо сейчас, не трогая настройки. Тем же путём, что и слайд-шоу:
+    /// прямая установка обоев пропускала заполнение полей, не умела видео и страницы
+    /// и сносила видеослой на соседнем мониторе.
+    /// </summary>
     void PreviewNow(string path)
     {
         if (_monId is null) return;
-        Desktop.SetWallpaper(_monId, path);
+        Program.Engine.ShowNow(_monId, path);
     }
 
     // ================= общее =================
@@ -836,8 +904,18 @@ public partial class SettingsWindow : Window
             };
             toggle.Checked += (_, _) => SetHotkeyEnabled(keyRef, true, boxRef);
             toggle.Unchecked += (_, _) => SetHotkeyEnabled(keyRef, false, boxRef);
-            box.GotKeyboardFocus += (s, _) => ((TextBox)s).Background = (Brush)Resources["AccentSoft"];
-            box.LostKeyboardFocus += (s, _) => ((TextBox)s).Background = (Brush)Resources["Surface"];
+            // Пока поле ловит комбинацию, глобальные клавиши сняты: иначе нажатая занятая
+            // комбинация выполнится, а не запишется. Возвращаем их, когда фокус ушёл.
+            box.GotKeyboardFocus += (s, _) =>
+            {
+                ((TextBox)s).Background = (Brush)Resources["AccentSoft"];
+                Program.SuspendHotkeys();
+            };
+            box.LostKeyboardFocus += (s, _) =>
+            {
+                ((TextBox)s).Background = (Brush)Resources["Surface"];
+                ShowHotkeyFailures(Program.RebindHotkeys());
+            };
             box.PreviewKeyDown += HotkeyCapture;
 
             Grid.SetColumn(toggle, 0);
@@ -871,9 +949,11 @@ public partial class SettingsWindow : Window
 
         if (key is Key.Back or Key.Delete)
         {
+            // Пустая строка, а не удаление ключа: пропавшую клавишу FillHotkeyDefaults
+            // при следующем запуске молча вернул бы к значению по умолчанию.
             box.Text = "";
-            Cfg.Hotkeys.Remove(action);
-            ShowHotkeyFailures(Program.RebindHotkeys());
+            Cfg.Hotkeys[action] = "";
+            Cfg.Save();
             return;
         }
         if (key == Key.Tab || key == Key.Escape) { Keyboard.ClearFocus(); return; }
@@ -881,9 +961,10 @@ public partial class SettingsWindow : Window
         var combo = Hotkeys.Format(Keyboard.Modifiers, key);
         if (combo.Length == 0) return;              // пока нажаты одни модификаторы
 
+        // Регистрируем, когда фокус уйдёт из поля: пока он здесь, клавиши сняты.
         box.Text = combo;
         Cfg.Hotkeys[action] = combo;
-        ShowHotkeyFailures(Program.RebindHotkeys());
+        Cfg.Save();
     }
 
     void ShowHotkeyFailures(IReadOnlyList<string> failed)

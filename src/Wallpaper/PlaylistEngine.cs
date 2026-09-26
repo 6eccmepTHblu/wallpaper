@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows.Threading;
 
 namespace Wallpaper;
@@ -7,7 +9,11 @@ public sealed class PlaylistEngine : IDisposable
 {
     /// <summary>Картинки: их ставит Windows как обычные обои.</summary>
     static readonly HashSet<string> ImageExt = new(StringComparer.OrdinalIgnoreCase)
-    { ".jpg", ".jpeg", ".jfif", ".png", ".bmp", ".dib", ".gif", ".tif", ".tiff", ".webp" };
+    { ".jpg", ".jpeg", ".jfif", ".png", ".bmp", ".dib", ".gif", ".tif", ".tiff", ".webp", ".avif" };
+
+    /// <summary>Фильтр для диалогов выбора картинок — из того же списка, чтобы новый формат не забывался в диалогах.</summary>
+    public static string ImageFilter =>
+        "Изображения|" + string.Join(";", ImageExt.Select(e => "*" + e)) + "|Все файлы|*.*";
 
     /// <summary>Движущееся: играет слой рабочего стола. Анимированный gif — только явным режимом «Видео».</summary>
     static readonly HashSet<string> MovingExt = new(StringComparer.OrdinalIgnoreCase)
@@ -17,6 +23,98 @@ public sealed class PlaylistEngine : IDisposable
                                    || MovingExt.Contains(Path.GetExtension(path));
 
     public static bool IsMoving(string path) => MovingExt.Contains(Path.GetExtension(path));
+
+    /// <summary>
+    /// Метка «не показывать» в начале имени файла. Живёт в самом имени, а не в конфиге:
+    /// переживает переезд папки, видна в проводнике и понятна без приложения.
+    /// </summary>
+    public const string HiddenMark = "(-)";
+
+    public static bool IsHidden(string path) =>
+        Path.GetFileName(path).StartsWith(HiddenMark, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Спрятать файл от слайд-шоу — дописать метку в начало имени. Возвращает новое имя,
+    /// уже спрятанный файл отдаёт как есть, а при неудаче — null.
+    /// </summary>
+    public static string? Hide(string path)
+    {
+        if (IsHidden(path)) return path;
+
+        try
+        {
+            var dir = Path.GetDirectoryName(path);
+            if (dir is null) return null;
+
+            var target = Path.Combine(dir, HiddenMark + Path.GetFileName(path));
+            if (File.Exists(target)) return null;   // тёзка уже лежит рядом, чужое не трогаем
+
+            File.Move(path, target);
+            return target;
+        }
+        catch (Exception e)
+        {
+            Paths.Write($"спрятать {Path.GetFileName(path)}: {e.Message}");
+            return null;
+        }
+    }
+
+    // ---------- удаление в корзину ----------
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct SHFILEOPSTRUCTW
+    {
+        public IntPtr hwnd;
+        public uint wFunc;
+        public string pFrom;
+        public string? pTo;
+        public ushort fFlags;
+        public int fAnyOperationsAborted;
+        public IntPtr hNameMappings;
+        public string? lpszProgressTitle;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern int SHFileOperationW(ref SHFILEOPSTRUCTW op);
+
+    const uint FO_DELETE = 0x0003;
+    const ushort FOF_SILENT = 0x0004;
+    const ushort FOF_NOCONFIRMATION = 0x0010;
+    const ushort FOF_ALLOWUNDO = 0x0040;      // то самое «в корзину, а не насовсем»
+    const ushort FOF_NOERRORUI = 0x0400;
+
+    /// <summary>
+    /// Убрать файл в корзину. Именно в корзину: горячая клавиша срабатывает мгновенно и без
+    /// вопросов, так что промах обязан быть обратимым. File.Delete стирал бы насовсем.
+    /// </summary>
+    public static bool Recycle(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return false;
+
+            // Список файлов для шелла — с двойным нулём в конце.
+            var op = new SHFILEOPSTRUCTW
+            {
+                wFunc = FO_DELETE,
+                pFrom = path + "\0\0",
+                fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT,
+            };
+
+            int rc = SHFileOperationW(ref op);
+            if (rc != 0 || op.fAnyOperationsAborted != 0)
+            {
+                Paths.Write($"в корзину {Path.GetFileName(path)}: код {rc}");
+                return false;
+            }
+            return true;
+        }
+        catch (Exception e)
+        {
+            Paths.Write($"в корзину {Path.GetFileName(path)}: {e.Message}");
+            return false;
+        }
+    }
 
     // ponytail: тик раз в 5 с вместо таймера на точное время следующей смены.
     // Погрешность ±5 с на интервале в 15 минут никого не волнует; станет важно —
@@ -83,18 +181,32 @@ public sealed class PlaylistEngine : IDisposable
         // Снимая паузу, отсчитываем интервал заново: иначе картинка сменится сразу же,
         // хотя пауза как раз и была нужна, чтобы её задержать.
         if (!on && _st.Cursors.TryGetValue(monId, out var pos))
-            pos.DueUtc = DateTime.UtcNow.AddSeconds(Math.Max(5, _cfg.Playlist(pos.PlaylistId)?.IntervalSeconds ?? 900));
+            pos.DueUtc = NextDue(pos.PlaylistId);
 
         _st.Save();
         Changed?.Invoke();
         return on;
     }
 
+    /// <summary>Из чего строится список файлов, в виде строки — чтобы заметить, что это изменилось.</summary>
+    string _sources = "";
+
     public void Reload(Config cfg)
     {
         _cfg = cfg;
-        Forget();
-        BuildWatchers();
+
+        // Настройки сохраняются на каждую галку, а полный обход папок на большой или сетевой
+        // библиотеке подвешивает окно. Поэтому список пересобираем, только если изменилось
+        // то, из чего он строится. Появление файлов в самих папках ловит watcher, а если
+        // он промолчал — есть Refresh.
+        var sources = JsonSerializer.Serialize(
+            cfg.Playlists.Select(p => new { p.Id, p.Folders, p.Files, p.Excluded, p.Order }), Config.Json);
+        if (sources != _sources)
+        {
+            _sources = sources;
+            Forget();
+            BuildWatchers();
+        }
         Sync();
     }
 
@@ -106,7 +218,10 @@ public sealed class PlaylistEngine : IDisposable
         if (!_cfg.Enabled) return;
 
         Desktop.SetPosition(_cfg.Fit);
-        if (!string.IsNullOrWhiteSpace(_cfg.BackgroundColor)) Desktop.SetBackgroundColor(_cfg.BackgroundColor!);
+        // В остальных режимах цвет полей зависит от самой картинки и выставляется на каждую
+        // отдельно, а в режиме размытия полей не остаётся вовсе.
+        if (_cfg.Background == BackgroundMode.Color && !string.IsNullOrWhiteSpace(_cfg.BackgroundColor))
+            Desktop.SetBackgroundColor(_cfg.BackgroundColor!);
 
         foreach (var mon in Desktop.Monitors())
         {
@@ -195,14 +310,21 @@ public sealed class PlaylistEngine : IDisposable
             {
                 PlaylistId = plId,
                 Path = path,
-                DueUtc = DateTime.UtcNow.AddSeconds(Math.Max(5, _cfg.Playlist(plId)?.IntervalSeconds ?? 900)),
+                DueUtc = NextDue(plId),
             };
             _st.Save();
             Changed?.Invoke();
             return;
         }
+        // Не открылся ни один. Тик иначе пробовал бы заново каждые 5 с и писал это в лог
+        // столько же раз, а файлы за 5 с не починятся — ждём обычный интервал.
+        if (_st.Cursors.TryGetValue(monId, out var pos)) pos.DueUtc = NextDue(plId);
         Paths.Write($"плейлист {plId}: ни один файл не открылся ({order.Length} шт.)");
     }
+
+    /// <summary>Когда менять картинку в следующий раз. Меньше 5 с не бывает: тик реже не умеет.</summary>
+    DateTime NextDue(string? plId) =>
+        DateTime.UtcNow.AddSeconds(Math.Max(5, _cfg.Playlist(plId)?.IntervalSeconds ?? 900));
 
     int _ticksToMonitorRefresh;
 
@@ -279,7 +401,7 @@ public sealed class PlaylistEngine : IDisposable
             {
                 PlaylistId = plId,
                 Path = path,
-                DueUtc = DateTime.UtcNow.AddSeconds(Math.Max(5, _cfg.Playlist(plId)?.IntervalSeconds ?? 900)),
+                DueUtc = NextDue(plId),
             };
             _st.Save();
         }
@@ -304,6 +426,19 @@ public sealed class PlaylistEngine : IDisposable
     }
 
     /// <summary>
+    /// Показать заново то, что уже показано. Нужно, когда сменился не файл, а способ показа:
+    /// заполнение полей, цвет. Курсор и таймер при этом не двигаются.
+    /// </summary>
+    public void Repaint()
+    {
+        foreach (var mon in Desktop.Monitors())
+        {
+            if (_cfg.Monitors.GetValueOrDefault(mon.Id)?.Mode != Mode.Playlist) continue;
+            if (_st.Cursors.GetValueOrDefault(mon.Id)?.Path is string p) Present(mon.Id, p);
+        }
+    }
+
+    /// <summary>
     /// Всё, что нашлось, включая выключенное — сетке в настройках нужно показать и его,
     /// иначе выключенный файл негде включить обратно.
     /// </summary>
@@ -318,7 +453,7 @@ public sealed class PlaylistEngine : IDisposable
 
         foreach (var f in pl.Files)
         {
-            try { if (Known(f) && File.Exists(f)) files.Add(Path.GetFullPath(f)); }
+            try { if (Known(f) && !IsHidden(f) && File.Exists(f)) files.Add(Path.GetFullPath(f)); }
             catch { }
         }
 
@@ -334,7 +469,7 @@ public sealed class PlaylistEngine : IDisposable
             try
             {
                 foreach (var f in Directory.EnumerateFiles(d.Path, "*", opts))
-                    if (Known(f)) files.Add(f);
+                    if (Known(f) && !IsHidden(f)) files.Add(f);
             }
             catch (Exception e) { Paths.Write($"скан {d.Path}: {e.Message}"); }
         }
@@ -346,6 +481,25 @@ public sealed class PlaylistEngine : IDisposable
     }
 
     // ---------- чистые функции, их и проверяет SelfTest ----------
+
+    /// <summary>
+    /// Переложить файлы в выбранном порядке. Дата создания для скопированного в папку файла —
+    /// это момент его появления там, то самое «недавно добавленные».
+    /// </summary>
+    public static string[] SortFiles(string[] files, SortMode mode) => mode switch
+    {
+        SortMode.Name => [.. files.OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)],
+        SortMode.NewestFirst => [.. files.OrderByDescending(Created)],
+        SortMode.OldestFirst => [.. files.OrderBy(Created)],
+        _ => files,
+    };
+
+    static DateTime Created(string path)
+    {
+        try { return File.GetCreationTimeUtc(path); }
+        catch { return DateTime.MinValue; }   // файл исчез между сканом и сортировкой
+    }
+
 
     public static int Mod(int value, int count) => count <= 0 ? -1 : (value % count + count) % count;
 

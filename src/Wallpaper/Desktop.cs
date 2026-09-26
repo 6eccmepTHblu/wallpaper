@@ -136,7 +136,13 @@ public static class Desktop
         }
         catch { return false; }
 
-        Post(() => Dw.SetWallpaper(monitorId, full));
+        Post(() =>
+        {
+            // Оболочка отвечает «файл не найден» и на неизвестный ей монитор — без пути
+            // и монитора в сообщении такую жалобу не разобрать.
+            try { Dw.SetWallpaper(monitorId, full); }
+            catch (Exception e) { Paths.Write($"обои не поставились: {full} на {monitorId[..24]}… — {e.Message}"); }
+        });
         WallpaperApplied?.Invoke(monitorId, full);
         return true;
     }

@@ -82,6 +82,17 @@ public static class Ui
         SetWindowPos(h, new IntPtr(-1) /* HWND_TOPMOST */, x, y, cx, cy, 0x0040 /* SWP_SHOWWINDOW */);
     }
 
+    /// <summary>
+    /// Посадить окно в заданное место экрана. Как и PlaceOn, мимо Left/Top: WPF считает
+    /// в DIP, а координаты мониторов приходят в физических пикселях.
+    /// </summary>
+    public static void PlaceAt(Window w, int x, int y, int cx, int cy)
+    {
+        var h = new WindowInteropHelper(w).Handle;
+        if (h == IntPtr.Zero) return;
+        SetWindowPos(h, new IntPtr(-1) /* HWND_TOPMOST */, x, y, cx, cy, 0x0010 /* SWP_NOACTIVATE */);
+    }
+
     /// <summary>Открыть файл или показать его в проводнике.</summary>
     public static void Open(string path, bool select = false)
     {

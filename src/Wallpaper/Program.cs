@@ -111,6 +111,7 @@ public static class Program
         _video = new VideoLayer(_cfg);
 
         _engine.Changed += UpdateTooltip;
+        _engine.Changed += UpdatePauseBadges;
         _engine.ScheduleWantsPlaylist += PlaylistEverywhere;
         _engine.VerifyLayer += () => _video.Verify();
         _engine.Present = Present;
@@ -182,8 +183,51 @@ public static class Program
             ContextMenuStrip = _menu,
             Text = "Wallpaper",
         };
-        _tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) Next(); };
-        _tray.DoubleClick += (_, _) => OpenSettings();
+        // Одиночный левый клик открывает окно. Отдельного обработчика двойного нет: окно
+        // и так уже открыто после первого клика, второй просто вынесет его вперёд.
+        // Следующие обои остались в меню по правой кнопке и на Ctrl+Alt+→.
+        _tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) OpenSettings(); };
+    }
+
+    static readonly Dictionary<string, PauseBadge> _badges = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Плашка «пауза» висит ровно на тех мониторах, где слайд-шоу стоит. Вызывается на каждое
+    /// изменение состояния движка, поэтому обязана быть дешёвой и идемпотентной.
+    /// </summary>
+    static void UpdatePauseBadges()
+    {
+        var mons = Desktop.Monitors();
+        var want = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var m in mons)
+        {
+            if (!_cfg.Enabled) continue;
+            if (_cfg.Monitors.GetValueOrDefault(m.Id)?.Mode != Mode.Playlist) continue;
+            if (!_engine.IsPaused(m.Id)) continue;
+
+            want.Add(m.Id);
+            if (_badges.TryGetValue(m.Id, out var have)) have.Place(m);
+            else
+            {
+                var badge = new PauseBadge(m);
+                _badges[m.Id] = badge;
+                badge.Show();
+            }
+        }
+
+        foreach (var id in _badges.Keys.ToArray())
+        {
+            if (want.Contains(id)) continue;
+            _badges[id].Close();
+            _badges.Remove(id);
+        }
+    }
+
+    static void CloseBadges()
+    {
+        foreach (var b in _badges.Values) b.Close();
+        _badges.Clear();
     }
 
     static void UpdateTooltip()
@@ -197,7 +241,11 @@ public static class Program
             : $"{(_engine.IsPaused(here!.Id) ? "⏸ " : "")}{Path.GetFileName(path)}";
 
         // NotifyIcon.Text не переживает больше 63 символов
-        _tray.Text = text.Length <= 63 ? text : text[..60] + "…";
+        text = text.Length <= 63 ? text : text[..60] + "…";
+
+        // Присваивание Text — это NIM_MODIFY оболочке. Слайд-шоу зовёт нас на каждую смену
+        // обоев, и без этой проверки трей дёргался бы сотни раз за час впустую.
+        if (_tray.Text != text) _tray.Text = text;
     }
 
     static void BuildMenu()
@@ -296,6 +344,40 @@ public static class Program
         if (Here() is { } m) _engine.Advance(m.Id, 1);
     }
 
+    /// <summary>
+    /// Убрать текущую картинку с глаз: в корзину или пометкой «(-)» в начале имени.
+    /// Сначала листаем дальше и только потом трогаем файл — пока он висит обоями, его
+    /// держит открытым либо Windows, либо наш проигрыватель в слое.
+    /// </summary>
+    static void DropCurrent(Desktop.Display? mon, bool recycle)
+    {
+        if (mon is null) return;
+
+        var path = _engine.CurrentPath(mon.Id);
+        if (path is null) { Balloon("Wallpaper", "На этом мониторе нечего убирать"); return; }
+
+        var name = Path.GetFileName(path);
+        _engine.Advance(mon.Id, 1);
+
+        if (recycle)
+        {
+            Balloon("Wallpaper", PlaylistEngine.Recycle(path)
+                ? $"В корзину: {name}"
+                : $"Не удалось удалить: {name}");
+        }
+        else
+        {
+            var hidden = PlaylistEngine.Hide(path);
+            Balloon("Wallpaper", hidden is null
+                ? $"Не удалось спрятать: {name}"
+                : $"Спрятано из слайд-шоу: {Path.GetFileName(hidden)}");
+        }
+
+        // Список файлов изменился. Наблюдатель за папкой это увидит и сам, но ждать секунду
+        // ради своей же правки незачем — и на не отслеживаемой папке ждать было бы нечего.
+        _engine.Refresh();
+    }
+
     /// <summary>Пауза на одном мониторе. На остальных слайд-шоу продолжает идти.</summary>
     static void TogglePause(Desktop.Display m)
     {
@@ -365,7 +447,7 @@ public static class Program
         var d = new Microsoft.Win32.OpenFileDialog
         {
             Title = "Картинка на рабочий стол",
-            Filter = "Изображения|*.jpg;*.jpeg;*.jfif;*.png;*.bmp;*.dib;*.gif;*.tif;*.tiff;*.webp|Все файлы|*.*",
+            Filter = PlaylistEngine.ImageFilter,
         };
         if (d.ShowDialog() != true) return;
         mc.Mode = Mode.Static;
@@ -417,6 +499,7 @@ public static class Program
     {
         _picker?.Close();
         _settings?.Close();
+        CloseBadges();
         _tray.Visible = false;
         _tray.Dispose();
 
@@ -440,14 +523,47 @@ public static class Program
     /// </summary>
     static bool Present(string monitorId, string path)
     {
-        if (PlaylistEngine.IsMoving(path) || _video.LayerBusy)
+        var shown = Dress(monitorId, path);
+        bool moving = PlaylistEngine.IsMoving(shown);
+
+        if (moving || _video.LayerBusy)
         {
-            _video.SetPlaylistItem(monitorId, path);
-            return true;
+            if (_video.CanPlay(shown))
+            {
+                _video.SetPlaylistItem(monitorId, shown);
+                return true;
+            }
+            // Без libmpv слой не покажет ни видео, ни картинку. Видео пропускаем, картинку
+            // отдаём Windows: пусть слой на соседнем мониторе пересоберётся, чем слайд-шоу встанет.
+            if (moving) return false;
         }
 
         _video.SetPlaylistItem(monitorId, null);
-        return Desktop.SetWallpaper(monitorId, path);
+        return Desktop.SetWallpaper(monitorId, shown);
+    }
+
+    /// <summary>
+    /// Подготовить картинку под выбранное заполнение полей. «Автоматически» подбирает цвет
+    /// под саму картинку, «Размытие» подменяет её собранной под размер монитора. Видео и
+    /// страницы не трогаем: там поля рисует проигрыватель.
+    /// </summary>
+    static string Dress(string monitorId, string path)
+    {
+        if (PlaylistEngine.IsMoving(path)) return path;
+
+        switch (_cfg.Background)
+        {
+            case BackgroundMode.Average:
+                if (Backdrop.Average(path) is string c) Desktop.SetBackgroundColor(c);
+                return path;
+
+            case BackgroundMode.Blur:
+                var mon = Desktop.Monitors().FirstOrDefault(m => m.Id == monitorId);
+                return mon is null ? path : Backdrop.Compose(path, mon.W, mon.H) ?? path;
+
+            default:
+                return path;
+        }
     }
 
     /// <summary>
@@ -531,6 +647,9 @@ public static class Program
 
             case "quit": Quit(); break;
 
+            case "deleteCurrent": DropCurrent(here, recycle: true); break;
+            case "hideCurrent": DropCurrent(here, recycle: false); break;
+
             default:
                 if (here is not null
                     && action.StartsWith("playlist", StringComparison.Ordinal)
@@ -572,7 +691,8 @@ public static class Program
         }
         _reloadTries = 0;
 
-        var hotkeysChanged = !cfg.Hotkeys.OrderBy(k => k.Key).SequenceEqual(_cfg.Hotkeys.OrderBy(k => k.Key));
+        var hotkeysChanged = !cfg.Hotkeys.OrderBy(k => k.Key).SequenceEqual(_cfg.Hotkeys.OrderBy(k => k.Key))
+                          || !cfg.HotkeysOff.Order().SequenceEqual(_cfg.HotkeysOff.Order());
         _cfg = cfg;
         Config.AutostartEnabled = _cfg.StartWithWindows;
 
@@ -605,6 +725,19 @@ public static class Program
         _hotkeys = new Hotkeys(_cfg.Hotkeys, OnHotkey, _cfg.HotkeyEnabled);
         _cfg.Save();
         return _hotkeys.Failed;
+    }
+
+    /// <summary>
+    /// Снять глобальные клавиши на время захвата комбинации в настройках. Иначе уже занятая
+    /// комбинация до поля не дойдёт, а выполнится: Ctrl+Alt+D унесёт обои в корзину.
+    /// Вернуть — <see cref="RebindHotkeys"/>.
+    /// </summary>
+    internal static void SuspendHotkeys() => _hotkeys.Dispose();
+
+    /// <summary>Вернуть клавиши, если захват оборвался — например, окно закрыли с фокусом в поле.</summary>
+    internal static void ResumeHotkeys()
+    {
+        if (_hotkeys.Disposed) RebindHotkeys();
     }
 
     internal static void OpenSettings()

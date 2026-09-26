@@ -67,11 +67,16 @@ public static class Mpv
             if (NativeLibrary.TryLoad(n, out _lib)) { LoadedFrom = $"{n} (из PATH)"; return; }
         }
 
-        Paths.Write(problems.Count > 0
+        var msg = problems.Count > 0
             ? "libmpv не загрузилась: " + string.Join(" | ", problems)
             : $"libmpv не найдена. Искали: {string.Join(", ", SearchPaths().Take(2))}"
-              + $" (mpvPath = {ExtraPath ?? "не задан"})");
+              + $" (mpvPath = {ExtraPath ?? "не задан"})";
+
+        // Пробник зовут на каждую смену обоев, пока слой занят, — одну и ту же жалобу пишем раз.
+        if (msg != _lastComplaint) { _lastComplaint = msg; Paths.Write(msg); }
     }
+
+    static string? _lastComplaint;
 
     [DllImport(Lib)] static extern IntPtr mpv_create();
     [DllImport(Lib)] static extern int mpv_initialize(IntPtr ctx);
@@ -448,10 +453,30 @@ public sealed class VideoLayer : IDisposable
         return IntPtr.Zero;
     }
 
+    /// <summary>
+    /// Идёт Apply. Пробник слоя крутит очередь сообщений (DoEvents), и за это время успевают
+    /// сработать таймеры — тик слайд-шоу, проверка слоя — и зайти сюда же повторно, посреди
+    /// подбора способа привязки.
+    /// </summary>
+    bool _applying, _applyAgain;
+
     /// <summary>Привести слой в соответствие конфигу: создать нужные окна, снять лишние.</summary>
     public void Apply(Config cfg)
     {
         _cfg = cfg;
+        // Повторный вход не выполняем, а помечаем: текущий проход закончит и повторит
+        // с самым свежим конфигом и тем, что успело попросить слайд-шоу.
+        if (_applying) { _applyAgain = true; return; }
+        _applying = true;
+        try
+        {
+            do { _applyAgain = false; ApplyOnce(_cfg); } while (_applyAgain);
+        }
+        finally { _applying = false; }
+    }
+
+    void ApplyOnce(Config cfg)
+    {
         _pause.Reload(cfg);
         Note = null;
 
@@ -502,6 +527,20 @@ public sealed class VideoLayer : IDisposable
             return;
         }
 
+        if (wanted.Values.Any(w => !WebLayer.IsWeb(w.Path)) && !MpvReady())
+        {
+            Note = "libmpv не найден";
+            if (!_toldAboutMissingMpv)
+            {
+                _toldAboutMissingMpv = true;
+                Paths.Write("видеорежим включён, но libmpv-2.dll нет — положи её рядом с Wallpaper.exe");
+            }
+            // Играть нечем только то, что для mpv. Страницам на соседних мониторах он не нужен —
+            // раньше здесь был выход из Apply целиком, и они не поднимались вместе с остальным.
+            foreach (var id in wanted.Where(w => !WebLayer.IsWeb(w.Value.Path)).Select(w => w.Key).ToArray())
+                wanted.Remove(id);
+        }
+
         foreach (var id in _surfaces.Keys.ToArray())
         {
             if (wanted.ContainsKey(id)) continue;
@@ -510,22 +549,6 @@ public sealed class VideoLayer : IDisposable
         }
 
         if (wanted.Count == 0) { _pause.Stop(); return; }
-
-        if (wanted.Values.Any(w => !WebLayer.IsWeb(w.Path)))
-        {
-            Mpv.ExtraPath = cfg.MpvPath;
-            Mpv.Probe();
-            if (!Mpv.Available)
-            {
-                Note = "libmpv не найден";
-                if (!_toldAboutMissingMpv)
-                {
-                    _toldAboutMissingMpv = true;
-                    Paths.Write("видеорежим включён, но libmpv-2.dll нет — положи её рядом с Wallpaper.exe");
-                }
-                return;
-            }
-        }
 
         var attach = DetectAttach();
         if (attach is null) { Note = "слой рабочего стола недоступен на этой сборке Windows"; return; }
@@ -555,6 +578,16 @@ public sealed class VideoLayer : IDisposable
 
         _fromPlaylist[monitorId] = path;
         Apply(_cfg);
+    }
+
+    /// <summary>Сможет ли слой показать файл: страницы играет WebView2, всё остальное — mpv.</summary>
+    public bool CanPlay(string path) => WebLayer.IsWeb(path) || MpvReady();
+
+    bool MpvReady()
+    {
+        Mpv.ExtraPath = _cfg.MpvPath;
+        Mpv.Probe();
+        return Mpv.Available;
     }
 
     void Ensure(string monitorId, Surface want)
@@ -655,7 +688,8 @@ public sealed class VideoLayer : IDisposable
     /// </summary>
     public void Verify()
     {
-        if (_surfaces.Count == 0) return;
+        // Посреди Apply окна как раз пересоздаются — проверять там нечего.
+        if (_surfaces.Count == 0 || _applying) return;
 
         foreach (var (_, s) in _surfaces)
         {
@@ -674,6 +708,9 @@ public sealed class VideoLayer : IDisposable
     /// <summary>Снести все окна и собрать слой заново, заодно перепроверив способ привязки.</summary>
     public void Repark()
     {
+        // Снести окна посреди Apply — выбить у него почву из-под ног. Повторим через 2 с.
+        if (_applying) { _repark.Stop(); _repark.Start(); return; }
+
         foreach (var id in _surfaces.Keys.ToArray())
         {
             if (!_surfaces.Remove(id, out var s)) continue;

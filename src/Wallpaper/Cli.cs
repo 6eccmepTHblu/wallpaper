@@ -124,6 +124,8 @@ internal static class Cli
         Schedule();
         PlaylistScan();
         PausePerMonitor();
+        SortByDate();
+        Backdrops();
 
         Console.WriteLine(_failed == 0 ? "\nвсё сошлось\n" : $"\nпровалено проверок: {_failed}\n");
         return _failed == 0 ? 0 : 1;
@@ -171,6 +173,14 @@ internal static class Cli
             Check(e.All("t").Length == 3, "рекурсивный обход берёт файлы из подпапки");
             Check(!e.All("t").Contains(Path.Combine(root, "readme.txt")), "чужое расширение не берём");
 
+            // Сохранение настроек на каждую галку не должно заново обходить папки.
+            // Первый Reload — как на старте приложения: он и строит список.
+            e.Reload(cfg);
+            var scanned = e.All("t");
+            pl.IntervalSeconds = 123;
+            e.Reload(cfg);
+            Check(ReferenceEquals(scanned, e.All("t")), "смена интервала не пересканирует папки");
+
             pl.Folders[0].Recursive = false;
             e.Reload(cfg);
             Check(e.All("t").Length == 2, "без галки «с подпапками» вложенное не считается");
@@ -181,8 +191,133 @@ internal static class Cli
             Check(e.All("t").Length == 3, "выключенный файл остаётся в полном списке — иначе его не включить");
             Check(e.Order("t").Length == 2, "выключенный файл выпадает из ротации");
             Check(!e.Order("t").Contains(deep), "выпал именно выключенный");
+
+            // Метка «(-)» в начале имени прячет файл от слайд-шоу.
+            pl.Excluded.Clear();
+            var hidden = PlaylistEngine.Hide(Path.Combine(root, "a.png"));
+            Check(hidden is not null && Path.GetFileName(hidden) == "(-)a.png", "метка дописалась в начало имени");
+            Check(PlaylistEngine.IsHidden(hidden!) && !PlaylistEngine.IsHidden(deep), "спрятанный узнаётся по имени");
+            Check(PlaylistEngine.Hide(hidden!) == hidden, "спрятать дважды — то же имя, без «(-)(-)»");
+
+            e.Reload(cfg);
+            Check(e.All("t").Length == 2, "спрятанный файл выпадает из списка совсем");
+            Check(!e.All("t").Any(f => Path.GetFileName(f).StartsWith("(-)")), "и не возвращается через папку");
+
+            // Тёзка уже лежит рядом — чужой файл не затираем.
+            File.WriteAllBytes(Path.Combine(root, "b.png"), []);
+            File.WriteAllBytes(Path.Combine(root, "(-)b.png"), []);
+            Check(PlaylistEngine.Hide(Path.Combine(root, "b.png")) is null, "тёзку не затираем");
         }
         finally { try { Directory.Delete(root, recursive: true); } catch { } }
+    }
+
+    // ---------- заполнение полей ----------
+
+    static void Backdrops()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "wallpaper-bg-" + Environment.ProcessId);
+        Directory.CreateDirectory(dir);
+        var made = new List<string>();
+        try
+        {
+            string Paint(string name, int w, int h, Action<System.Drawing.Graphics> draw)
+            {
+                var f = Path.Combine(dir, name);
+                using var bmp = new System.Drawing.Bitmap(w, h);
+                using (var g = System.Drawing.Graphics.FromImage(bmp)) draw(g);
+                bmp.Save(f, System.Drawing.Imaging.ImageFormat.Png);
+                return f;
+            }
+
+            var red = Paint("red.png", 100, 50, g => g.Clear(System.Drawing.Color.Red));
+            Check(Backdrop.Average(red) == "#FF0000", "средний цвет одноцветной картинки — он сам");
+
+            var half = Paint("half.png", 100, 50, g =>
+            {
+                g.Clear(System.Drawing.Color.Black);
+                g.FillRectangle(System.Drawing.Brushes.White, 0, 0, 50, 50);
+            });
+            var avg = Backdrop.Average(half);
+            Check(avg is not null && avg[1..3] == avg[3..5] && avg[3..5] == avg[5..7],
+                "половина белого на чёрном даёт серый");
+            Check(avg is not null && Convert.ToInt32(avg[1..3], 16) is > 100 and < 155,
+                "и это именно середина, а не край");
+
+            Check(Backdrop.Average(Path.Combine(dir, "нет-такого.png")) is null,
+                "у несуществующего файла среднего цвета нет");
+
+            // Подложка: широкая картинка на квадратный монитор — поля сверху и снизу.
+            var wide = Paint("wide.png", 200, 100, g => g.Clear(System.Drawing.Color.Lime));
+            var composed = Backdrop.Compose(wide, 400, 400);
+            Check(composed is not null && File.Exists(composed), "подложка собралась в файл");
+            if (composed is not null)
+            {
+                made.Add(composed);
+                using var got = new System.Drawing.Bitmap(composed);
+                Check(got.Width == 400 && got.Height == 400, "и ровно под размер монитора");
+                // Верхняя кромка — размытая копия, а не пустота: картинка зелёная, значит и она.
+                Check(got.GetPixel(200, 6).G > got.GetPixel(200, 6).R, "поля заполнены самой картинкой");
+            }
+
+            Check(Backdrop.Compose(wide, 400, 400) == composed, "второй заход берёт готовое из кэша");
+            Check(Backdrop.Compose(wide, 0, 0) is null, "монитор нулевого размера подложку не просит");
+
+            // Красный квадрат 16×16 в AVIF. GDI+ его не читает — должен сработать запасной путь через WIC.
+            var avif = Path.Combine(dir, "red.avif");
+            File.WriteAllBytes(avif, Convert.FromBase64String(
+                "AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAAAeAAAAKGlpbmYAAAAAAAEAAAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAAQAAAAEAAAABBwaXhpAAAAAAMICAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAAmbWRhdAoGGAz/2wCAMhQSgAAAQAAAAABXttMuUOPb4ZtO0g=="));
+            var red2 = Backdrop.Average(avif);
+            Check(red2 is not null && Convert.ToInt32(red2[1..3], 16) > 200 && Convert.ToInt32(red2[3..5], 16) < 60,
+                "AVIF читается через WIC (нужен AV1 Video Extension)");
+            var fromAvif = Backdrop.Compose(avif, 64, 64);
+            if (fromAvif is not null) made.Add(fromAvif);
+            Check(fromAvif is not null, "и подложка из AVIF собирается");
+        }
+        finally
+        {
+            foreach (var f in made) try { File.Delete(f); } catch { }
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    // ---------- порядок плиток в быстром выборе ----------
+
+    static void SortByDate()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "wallpaper-sort-" + Environment.ProcessId);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            // Даты назначаем явно: полагаться на порядок создания файлов нельзя, у файловой
+            // системы разрешение времени крупнее, чем промежуток между двумя записями.
+            string Make(string name, int daysAgo)
+            {
+                var f = Path.Combine(dir, name);
+                File.WriteAllBytes(f, []);
+                File.SetCreationTimeUtc(f, DateTime.UtcNow.AddDays(-daysAgo));
+                return f;
+            }
+
+            var old = Make("b_старый.png", 30);
+            var mid = Make("a_средний.png", 10);
+            var recent = Make("c_новый.png", 1);
+            string[] src = [old, mid, recent];
+
+            Check(PlaylistEngine.SortFiles(src, SortMode.Playlist).SequenceEqual(src),
+                "порядок плейлиста не трогаем");
+            Check(PlaylistEngine.SortFiles(src, SortMode.NewestFirst).SequenceEqual([recent, mid, old]),
+                "сначала новые — по дате создания");
+            Check(PlaylistEngine.SortFiles(src, SortMode.OldestFirst).SequenceEqual([old, mid, recent]),
+                "сначала старые — обратный порядок");
+            Check(PlaylistEngine.SortFiles(src, SortMode.Name).SequenceEqual([mid, old, recent]),
+                "по имени — по имени файла, а не по пути");
+
+            // Пропавший файл не должен ронять сортировку.
+            string[] withGhost = [.. src, Path.Combine(dir, "нет-такого.png")];
+            Check(PlaylistEngine.SortFiles(withGhost, SortMode.NewestFirst).Length == 4,
+                "исчезнувший файл сортировку не роняет");
+        }
+        finally { try { Directory.Delete(dir, recursive: true); } catch { } }
     }
 
     // ---------- пауза по мониторам ----------
@@ -328,6 +463,11 @@ internal static class Cli
         Check(trimmed.Hotkeys["next"] == "Ctrl+Alt+F1", "своя комбинация из файла сохраняется");
         Check(trimmed.Hotkeys.Count == Config.DefaultHotkeys().Count, "остальные добираются из умолчаний");
         Check(trimmed.Hotkeys.ContainsKey("quit"), "новое действие получает клавишу и в старом конфиге");
+
+        // Стёртая в настройках клавиша пишется пустой строкой и должна такой и остаться.
+        var cleared = JsonSerializer.Deserialize<Config>("""{ "hotkeys": { "quit": "" } }""", Config.Json)!;
+        cleared.FillHotkeyDefaults();
+        Check(cleared.Hotkeys["quit"] == "", "стёртая клавиша не возвращается к умолчанию");
     }
 
     static void ColorParsing()

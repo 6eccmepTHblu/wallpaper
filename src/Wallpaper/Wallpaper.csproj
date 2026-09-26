@@ -10,6 +10,8 @@
     <StartupObject>Wallpaper.Program</StartupObject>
 
     <AssemblyName>Wallpaper</AssemblyName>
+    <!-- Одна версия на всё: окно «О программе» и журнал Windows берут её отсюда -->
+    <Version>0.5.0</Version>
     <RootNamespace>Wallpaper</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>

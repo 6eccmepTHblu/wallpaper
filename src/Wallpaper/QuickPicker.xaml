@@ -13,6 +13,12 @@
         <ResourceDictionary Source="Menu.xaml"/>
       </ResourceDictionary.MergedDictionaries>
 
+      <Style TargetType="CheckBox">
+        <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+      </Style>
+
       <!-- Кнопка-плашка под тёмный оверлей: штатный шаблон рисует светлую. -->
       <Style TargetType="Button">
         <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
@@ -38,7 +44,8 @@
     </ResourceDictionary>
   </Window.Resources>
 
-  <Border Background="{DynamicResource Scrim}" CornerRadius="14" Padding="22">
+  <Grid>
+   <Border Background="{DynamicResource Scrim}" CornerRadius="14" Padding="22">
     <DockPanel>
 
       <Grid DockPanel.Dock="Top" Margin="4,0,4,16">
@@ -60,11 +67,15 @@
         </StackPanel>
 
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+          <CheckBox x:Name="ZoomBox" Content="Увеличить" Margin="0,0,16,0" Focusable="False"
+                    ToolTip="Наводишь на плитку — картинка показывается крупно, на 60% экрана"/>
+          <Button x:Name="SortChip" Margin="0,0,10,0" Cursor="Hand" Focusable="False"
+                  ToolTip="Порядок плиток. Клик или F6 — следующий"/>
           <Button x:Name="RefreshChip" Content="⟳ Обновить" Margin="0,0,16,0"
                   Cursor="Hand" Focusable="False"
                   ToolTip="Перечитать папки плейлиста"/>
           <TextBlock Foreground="{DynamicResource Muted}" FontSize="12"
-                     Text="← → ↑ ↓ выбрать · Enter поставить · F5 обновить · Tab плейлист · Esc закрыть"/>
+                     Text="← → ↑ ↓ выбрать · Enter поставить · F6 порядок · F5 обновить · Tab плейлист · Esc закрыть"/>
         </StackPanel>
       </Grid>
 
@@ -74,5 +85,20 @@
       </ScrollViewer>
 
     </DockPanel>
-  </Border>
+   </Border>
+
+   <!-- Превью по наведению. Мышь сквозь него проходит: иначе оно накрыло бы плитку,
+        та получила бы MouseLeave, и превью тут же схлопнулось. -->
+   <Border x:Name="PreviewHost" Visibility="Collapsed" IsHitTestVisible="False"
+           HorizontalAlignment="Center" VerticalAlignment="Center"
+           CornerRadius="10" Padding="5" Background="{DynamicResource Surface}"
+           BorderBrush="{DynamicResource Line}" BorderThickness="1">
+     <StackPanel>
+       <Image x:Name="PreviewImage" Stretch="Uniform"/>
+       <TextBlock x:Name="PreviewName" Margin="4,6,4,2" TextTrimming="CharacterEllipsis"
+                  HorizontalAlignment="Center" FontSize="12"
+                  Foreground="{DynamicResource Muted}"/>
+     </StackPanel>
+   </Border>
+  </Grid>
 </Window>

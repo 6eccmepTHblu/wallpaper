@@ -314,12 +314,18 @@
             <StackPanel Orientation="Horizontal">
               <TextBlock Text="Вписывание" Width="120"/>
               <ComboBox x:Name="FitBox" Width="220"/>
-              <TextBlock Text="Цвет полей" Width="100" Margin="24,0,0,0"/>
-              <TextBox x:Name="BgColor" Width="110" ToolTip="#RRGGBB, пусто — не трогать"/>
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+              <TextBlock Text="Поля" Width="120"/>
+              <ComboBox x:Name="BgMode" Width="220"/>
+              <TextBox x:Name="BgColor" Width="110" Margin="12,0,0,0" ToolTip="#RRGGBB, пусто — не трогать"/>
               <Border x:Name="BgSwatch" Width="26" Height="26" Margin="8,0,0,0" CornerRadius="4"
                       BorderThickness="1" BorderBrush="{DynamicResource Line}"/>
             </StackPanel>
-            <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
+            <TextBlock x:Name="BgHint" Style="{StaticResource Hint}" Margin="120,6,0,0"/>
+
+            <TextBlock Style="{StaticResource Hint}" Margin="0,10,0,0"
                        Text="Windows не умеет разное вписывание на разных мониторах — SetPosition задаётся на всю систему сразу."/>
           </StackPanel>
         </Border>
@@ -401,6 +407,24 @@
               <CheckBox x:Name="Autostart" Content="Запускать вместе с Windows"/>
               <TextBlock Style="{StaticResource Hint}" Margin="24,6,0,0"
                          Text="Запись в HKCU\Software\Microsoft\Windows\CurrentVersion\Run"/>
+            </StackPanel>
+          </Border>
+
+          <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+            <StackPanel>
+              <TextBlock Style="{StaticResource Caption}" Text="ПРЕВЬЮ В БЫСТРОМ ВЫБОРЕ"/>
+              <TextBlock Style="{StaticResource Hint}" Margin="0,0,0,10"
+                         Text="Крупный показ при наведении на плитку. Включается галкой «Увеличить» в самом оверлее."/>
+              <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="Размер, % от экрана" Width="200"/>
+                <TextBox x:Name="ZoomPercent" Width="70"
+                         ToolTip="От 10 до 100. По умолчанию 60"/>
+              </StackPanel>
+              <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Прозрачность, %" Width="200"/>
+                <TextBox x:Name="ZoomAlpha" Width="70"
+                         ToolTip="0 — непрозрачное превью, 90 — еле видное"/>
+              </StackPanel>
             </StackPanel>
           </Border>
 
