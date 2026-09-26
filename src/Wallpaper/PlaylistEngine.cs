@@ -259,8 +259,11 @@ public sealed class PlaylistEngine : IDisposable
 
         if (stale)
         {
-            // Разные мониторы на одном плейлисте стартуют с разных мест — иначе одинаковая картинка.
-            Show(monId, plId, order, Mod(StableHash(monId), order.Length));
+            // Вперемешку — со случайного места. По порядку разные мониторы стартуют с разных
+            // мест, иначе на всех одна и та же картинка.
+            Show(monId, plId, order, IsRandom(plId)
+                ? Random.Shared.Next(order.Length)
+                : Mod(StableHash(monId), order.Length));
         }
         else if (!IsPaused(monId) && DateTime.UtcNow >= pos!.DueUtc)
         {
@@ -289,7 +292,44 @@ public sealed class PlaylistEngine : IDisposable
 
         var pos = _st.Cursors.GetValueOrDefault(monId);
         int i = pos?.Path is string p ? Array.IndexOf(order, p) : -1;
-        Show(monId, mc.PlaylistId, order, Step(order.Length, i, delta));
+
+        if (!IsRandom(mc.PlaylistId))
+        {
+            Show(monId, mc.PlaylistId, order, Step(order.Length, i, delta));
+            return;
+        }
+
+        // Вперемешку: каждый следующий — честно случайный, назад — по истории показов.
+        if (delta < 0) { Back(monId, mc.PlaylistId, order); return; }
+        Remember(monId, pos?.Path);
+        Show(monId, mc.PlaylistId, order, RandomIndex(order.Length, i, Random.Shared));
+    }
+
+    bool IsRandom(string? plId) => _cfg.Playlist(plId)?.Order == OrderMode.Shuffle;
+
+    /// <summary>Сколько показов помнит «Предыдущая».</summary>
+    const int HistoryMax = 20;
+
+    void Remember(string monId, string? path)
+    {
+        if (path is null) return;
+        var h = _st.History.TryGetValue(monId, out var list) ? list : _st.History[monId] = [];
+        h.Add(path);
+        if (h.Count > HistoryMax) h.RemoveRange(0, h.Count - HistoryMax);
+    }
+
+    /// <summary>Шаг назад по истории. Удалённое и выключенное пропускаем; история пуста — стоим.</summary>
+    void Back(string monId, string plId, string[] order)
+    {
+        if (!_st.History.TryGetValue(monId, out var h)) return;
+        while (h.Count > 0)
+        {
+            var path = h[^1];
+            h.RemoveAt(h.Count - 1);
+            int i = Array.IndexOf(order, path);
+            if (i >= 0) { Show(monId, plId, order, i); return; }
+        }
+        _st.Save();   // история могла сократиться на одни пропуски
     }
 
     public void AdvanceAll(int delta)
@@ -392,11 +432,14 @@ public sealed class PlaylistEngine : IDisposable
     /// </summary>
     public void ShowNow(string monId, string path)
     {
+        var before = CurrentPath(monId);
         if (!Present(monId, path)) return;
 
         var plId = _cfg.Monitors.GetValueOrDefault(monId)?.PlaylistId;
         if (plId is not null && Array.IndexOf(Order(plId), path) >= 0)
         {
+            // Выбранное руками — тоже показ: «Предыдущая» должна вернуть то, что было до него.
+            if (IsRandom(plId)) Remember(monId, before);
             _st.Cursors[monId] = new PlayPos
             {
                 PlaylistId = plId,
@@ -474,10 +517,7 @@ public sealed class PlaylistEngine : IDisposable
             catch (Exception e) { Paths.Write($"скан {d.Path}: {e.Message}"); }
         }
 
-        var arr = files.ToArray();
-        // Мешаем до отсева: выключить один файл не должно перетасовать все остальные.
-        if (pl.Order == OrderMode.Shuffle) Shuffle(arr, _st.Seed ^ StableHash(plId));
-        return _all[plId] = arr;
+        return _all[plId] = files.ToArray();
     }
 
     // ---------- чистые функции, их и проверяет SelfTest ----------
@@ -516,14 +556,16 @@ public sealed class PlaylistEngine : IDisposable
         }
     }
 
-    public static void Shuffle(string[] a, int seed)
+    /// <summary>
+    /// Случайный номер из count, кроме текущего: иначе «следующая» иногда ничего не меняла бы.
+    /// Остальные номера равновероятны.
+    /// </summary>
+    public static int RandomIndex(int count, int current, Random rnd)
     {
-        var rnd = new Random(seed);
-        for (int i = a.Length - 1; i > 0; i--)
-        {
-            int j = rnd.Next(i + 1);
-            (a[i], a[j]) = (a[j], a[i]);
-        }
+        if (count <= 1) return 0;
+        if (current < 0) return rnd.Next(count);   // текущего нет — выбираем из всех
+        int i = rnd.Next(count - 1);
+        return i >= current ? i + 1 : i;
     }
 
     // ---------- слежение за папками ----------

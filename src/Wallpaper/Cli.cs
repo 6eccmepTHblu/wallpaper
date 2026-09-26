@@ -116,7 +116,8 @@ internal static class Cli
         OpenConsole();
 
         Cursor();
-        Shuffle();
+        RandomPick();
+        RandomHistory();
         StableHash();
         HotkeyParsing();
         ConfigRoundTrip();
@@ -347,26 +348,58 @@ internal static class Cli
         }
     }
 
-    // ---------- шаффл ----------
+    // ---------- честный рандом и история ----------
 
-    static void Shuffle()
+    static void RandomPick()
     {
-        string[] Src() => ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+        var rnd = new Random(1);   // свой seed: проверка должна быть повторяемой
+        var hits = new int[5];
+        for (int k = 0; k < 5000; k++) hits[PlaylistEngine.RandomIndex(5, 2, rnd)]++;
+        Check(hits[2] == 0, "случайный следующий не повторяет текущий");
+        Check(hits.Where((_, i) => i != 2).All(h => h is > 1100 and < 1400), "остальные выпадают поровну");
+        Check(PlaylistEngine.RandomIndex(1, 0, rnd) == 0, "один файл — он и выпадает");
+        Check(Enumerable.Range(0, 200).Select(_ => PlaylistEngine.RandomIndex(3, -1, rnd)).Distinct().Count() == 3,
+            "без текущего доступны все");
+    }
 
-        var x = Src(); PlaylistEngine.Shuffle(x, 42);
-        var y = Src(); PlaylistEngine.Shuffle(y, 42);
-        Check(x.SequenceEqual(y), "один seed — один порядок");
+    static void RandomHistory()
+    {
+        // Show сохраняет состояние на диск — откладываем настоящий state.json.
+        var backup = File.Exists(Paths.State) ? File.ReadAllText(Paths.State) : null;
+        var dir = Path.Combine(Path.GetTempPath(), "wallpaper-random-" + Environment.ProcessId);
+        Directory.CreateDirectory(dir);
+        try
+        {
+            for (int k = 0; k < 30; k++) File.WriteAllBytes(Path.Combine(dir, $"{k:D2}.png"), []);
+            var cfg = new Config
+            {
+                Enabled = false,
+                Playlists = { new Playlist { Id = "r", Order = OrderMode.Shuffle, Folders = { new FolderRef { Path = dir } } } },
+                Monitors = { ["M"] = new MonitorCfg { Mode = Mode.Playlist, PlaylistId = "r" } },
+            };
+            var st = new State();
+            using var e = new PlaylistEngine(cfg, st) { Present = (_, _) => true };
 
-        var z = Src(); PlaylistEngine.Shuffle(z, 43);
-        Check(!x.SequenceEqual(z), "другой seed — другой порядок");
+            var shown = new List<string>();
+            for (int k = 0; k < 25; k++) { e.Advance("M", 1); shown.Add(e.CurrentPath("M")!); }
+            Check(shown.Zip(shown.Skip(1)).All(p => p.First != p.Second), "одна и та же подряд не выпадает");
+            Check(shown.Distinct().Count() > 10, "и это действительно разные файлы, а не два по кругу");
+            Check(st.History["M"].Count == 20, "история держит ровно 20 показов");
 
-        Check(x.OrderBy(s => s).SequenceEqual(Src()), "шаффл ничего не теряет и не дублирует");
+            // Показано shown[0..24], в истории — последние 20 перед текущим: shown[4..23].
+            bool back = true;
+            for (int k = 23; k >= 4; k--) { e.Advance("M", -1); back &= e.CurrentPath("M") == shown[k]; }
+            Check(back, "«Предыдущая» идёт по истории в обратном порядке");
 
-        // курсор ходит по перемешанному списку без пропусков
-        var seen = new HashSet<string>();
-        int i = -1;
-        for (int k = 0; k < x.Length; k++) { i = PlaylistEngine.Step(x.Length, i, 1); seen.Add(x[i]); }
-        Check(seen.Count == x.Length, "полный круг показывает каждый файл ровно раз");
+            e.Advance("M", -1);
+            Check(e.CurrentPath("M") == shown[4], "история кончилась — картинка стоит на месте");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+            if (backup is not null) File.WriteAllText(Paths.State, backup);
+            else File.Delete(Paths.State);
+        }
     }
 
     static void StableHash()

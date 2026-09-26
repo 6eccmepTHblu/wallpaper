@@ -215,7 +215,7 @@ Explorer перестроить рабочий стол и убить окна �
       "files": [],
       "excluded": [],         // выключенные вручную файлы, целиком путём
       "intervalSeconds": 900,
-      "order": "shuffle"      // shuffle | sequential
+      "order": "shuffle"      // shuffle — каждый раз случайный, «назад» по истории из 20; sequential — по порядку
     }
   ]
 }

@@ -267,7 +267,11 @@ public sealed class PlayPos
 /// <summary>Отдельно от конфига, чтобы правки config.json руками не затирались.</summary>
 public sealed class State
 {
-    public int Seed { get; set; } = Random.Shared.Next();
+    /// <summary>
+    /// Последние показанные на мониторе файлы, новые в конце. Нужны «Предыдущей» в режиме
+    /// «Вперемешку»: следующий файл там случайный, и шаг назад по списку ничего не значит.
+    /// </summary>
+    public Dictionary<string, List<string>> History { get; set; } = [];
 
     /// <summary>
     /// Мониторы, на которых слайд-шоу остановлено. Пауза именно помониторная:
