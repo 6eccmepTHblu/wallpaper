@@ -337,12 +337,11 @@ public sealed class PlaylistEngine : IDisposable
         foreach (var mon in Desktop.Monitors()) Advance(mon.Id, delta);
     }
 
-    /// <summary>Показать order[start]; если файл исчез — идти дальше по списку.</summary>
+    /// <summary>Показать order[start]; если файл не открылся — пробовать следующие по Attempts.</summary>
     void Show(string monId, string plId, string[] order, int start)
     {
-        for (int k = 0; k < order.Length; k++)
+        foreach (int i in Attempts(order.Length, start, IsRandom(plId), Random.Shared))
         {
-            int i = Step(order.Length, start, k);
             var path = order[i];
             if (!Present(monId, path)) continue;
 
@@ -544,6 +543,18 @@ public sealed class PlaylistEngine : IDisposable
     public static int Mod(int value, int count) => count <= 0 ? -1 : (value % count + count) % count;
 
     public static int Step(int count, int current, int delta) => Mod(current + delta, count);
+
+    /// <summary>
+    /// В каком порядке пробовать файлы: сначала start, дальше по списку. Вперемешку — дальше
+    /// в случайном порядке: иначе каждый нерабочий файл отдавал свой шанс соседу по алфавиту.
+    /// </summary>
+    public static int[] Attempts(int count, int start, bool random, Random rnd)
+    {
+        var a = new int[count];
+        for (int k = 0; k < count; k++) a[k] = Step(count, start, k);
+        if (random && count > 1) rnd.Shuffle(a.AsSpan(1));
+        return a;
+    }
 
     /// <summary>String.GetHashCode рандомизирован между запусками — порядок бы плыл после перезапуска.</summary>
     public static int StableHash(string s)

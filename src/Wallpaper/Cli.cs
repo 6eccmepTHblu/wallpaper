@@ -393,6 +393,17 @@ internal static class Cli
 
             e.Advance("M", -1);
             Check(e.CurrentPath("M") == shown[4], "история кончилась — картинка стоит на месте");
+
+            // Весь диапазон, а не кусок: шанс пропустить хоть один из 30 за 1000 смен ~ 1e-14.
+            var seen = new HashSet<string>();
+            for (int k = 0; k < 1000; k++) { e.Advance("M", 1); seen.Add(e.CurrentPath("M")!); }
+            Check(seen.Count == 30, "за 1000 смен показаны все 30 файлов");
+
+            // 00..19 не открываются. Раньше их шанс доставался «20» — он выпадал ~2/3 раз.
+            e.Present = (_, p) => string.CompareOrdinal(Path.GetFileName(p), "20") >= 0;
+            var hits = new Dictionary<string, int>();
+            for (int k = 0; k < 3000; k++) { e.Advance("M", 1); var c = e.CurrentPath("M")!; hits[c] = hits.GetValueOrDefault(c) + 1; }
+            Check(hits.Count == 10 && hits.Values.Max() < 600, "нерабочие файлы не перекашивают выбор к соседу");
         }
         finally
         {
