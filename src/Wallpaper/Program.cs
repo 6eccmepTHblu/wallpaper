@@ -106,7 +106,8 @@ public static class Program
 
         _engine = new PlaylistEngine(_cfg, _state);
         // Пока наших окон в слое нет, синхронный COM безопасен — а дальше уже нельзя.
-        Desktop.WallpaperApplied += (monId, path) => _state.LastApplied[monId] = path;
+        // Сохраняем сразу: иначе убитый процесс оставляет в файле устаревшее «что мы ставили».
+        Desktop.WallpaperApplied += (monId, path) => { _state.LastApplied[monId] = path; _state.Save(); };
         CaptureOriginals();
         _video = new VideoLayer(_cfg);
 
@@ -574,11 +575,17 @@ public static class Program
     static void CaptureOriginals()
     {
         bool changed = false;
+        var mons = Desktop.Monitors();
 
-        foreach (var m in Desktop.Monitors())
+        foreach (var m in mons)
         {
             var current = Desktop.CurrentWallpaper(m.Id);
             if (string.IsNullOrEmpty(current)) continue;
+
+            // Наша подложка из кэша оригиналом не бывает: кэш чистится, и возвращать было бы нечего.
+            // Раньше LastApplied отставал от реальности (Repaint не сохранял состояние), и после
+            // убитого процесса подложка записывалась как «обои пользователя».
+            if (IsOurFile(current)) continue;
 
             if (_state.LastApplied.TryGetValue(m.Id, out var ours)
                 && string.Equals(ours, current, StringComparison.OrdinalIgnoreCase)
@@ -589,9 +596,22 @@ public static class Program
             changed = true;
         }
 
+        // Оригинал, которого уже нет на диске, не вернуть — и монитор остаётся с тем, что на нём было.
+        // ponytail: берём оригинал соседнего монитора; настоящий уже потерян, это лучше застрявшей картинки.
+        var spare = _state.OriginalWallpapers.Values.FirstOrDefault(p => !IsOurFile(p) && File.Exists(p));
+        foreach (var m in mons)
+        {
+            if (_state.OriginalWallpapers.TryGetValue(m.Id, out var o) && !IsOurFile(o) && File.Exists(o)) continue;
+            if (spare is null) continue;
+            _state.OriginalWallpapers[m.Id] = spare;
+            changed = true;
+        }
+
         if (_state.OriginalFit is null) { _state.OriginalFit = Desktop.CurrentPosition(); changed = true; }
         if (changed) _state.Save();
     }
+
+    static bool IsOurFile(string path) => path.StartsWith(Paths.Cache, StringComparison.OrdinalIgnoreCase);
 
     static void RestoreOriginals()
     {
