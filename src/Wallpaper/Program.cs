@@ -585,7 +585,12 @@ public static class Program
             // Наша подложка из кэша оригиналом не бывает: кэш чистится, и возвращать было бы нечего.
             // Раньше LastApplied отставал от реальности (Repaint не сохранял состояние), и после
             // убитого процесса подложка записывалась как «обои пользователя».
-            if (IsOurFile(current)) continue;
+            if (IsOurFile(current))
+            {
+                if (!_state.OriginalWallpapers.ContainsKey(m.Id))
+                    Paths.Write("оригинал обоев неизвестен: на мониторе уже наша подложка");
+                continue;
+            }
 
             if (_state.LastApplied.TryGetValue(m.Id, out var ours)
                 && string.Equals(ours, current, StringComparison.OrdinalIgnoreCase)
@@ -628,6 +633,8 @@ public static class Program
 
         if (_cfg.Enabled)
         {
+            // Пока обои были выключены, пользователь мог поставить свои — их и вернём в следующий раз.
+            CaptureOriginals();
             _engine.Reload(_cfg);
             _video.Apply(_cfg);
         }
@@ -637,7 +644,13 @@ public static class Program
             RestoreOriginals();
         }
         UpdateTooltip();
-        Balloon("Обои", _cfg.Enabled ? "включены" : "выключены");
+
+        // Без запомненного оригинала возвращать нечего, и молчать об этом нельзя: на экране
+        // остаётся последняя картинка слайд-шоу, и со стороны это выглядит как «просто сменилось».
+        bool unknown = !_cfg.Enabled && Desktop.Monitors().Any(m => !_state.OriginalWallpapers.ContainsKey(m.Id));
+        Balloon("Обои", _cfg.Enabled ? "включены"
+            : unknown ? "выключены, но прежние обои неизвестны — поставьте свои в Windows, при включении они запомнятся"
+            : "выключены");
     }
 
     static void OnHotkey(string action)
